@@ -6,21 +6,20 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {SafeMath} from "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import {ABDKMath64x64} from "abdk-libraries-solidity/ABDKMath64x64.sol";
+import {TokenManagerHook} from "./utils/TokenManagerHook.sol";
 import "hardhat/console.sol";
 
-// TODO: Make it a TokenManagerHook
-
-contract ConvictionOracle is Ownable {
-    using ABDKMath64x64 for int128;
-    using ABDKMath64x64 for uint256;
+contract AragonConvictionOracle is Ownable, TokenManagerHook {
     using SafeMath for uint256;
     using SafeERC20 for ERC20;
     using EnumerableSet for EnumerableSet.UintSet;
 
+    uint256 public constant D = 10000000;
+    uint256 public constant ONE_HUNDRED_PERCENT = 1e18;
+    uint256 private constant TWO_128 = 0x100000000000000000000000000000000; // 2^128
+    uint256 private constant TWO_127 = 0x80000000000000000000000000000000; // 2^127
+
     uint64 public constant MAX_STAKED_PROPOSALS = 10;
-    // Shift to left to leave space for decimals
-    int128 private constant ONE = 1 << 64;
 
     struct Proposal {
         uint256 stakedTokens;
@@ -32,12 +31,13 @@ contract ConvictionOracle is Ownable {
     }
 
     ERC20 public stakeToken;
-    int128 internal decay;
-    int128 internal minStakeRatio;
+    uint256 public decay;
+    uint256 public minStakeRatio;
     uint256 public proposalCounter;
     uint256 public totalStaked;
 
     mapping(address => bool) internal triggers;
+    mapping(address => mapping(uint256 => bool)) internal triggerProposals;
     mapping(uint256 => Proposal) internal proposals;
     mapping(address => uint256) internal totalVoterStake;
     mapping(address => EnumerableSet.UintSet) internal voterStakedProposals;
@@ -45,6 +45,7 @@ contract ConvictionOracle is Ownable {
     event TriggerChanged(address indexed trigger, bool active);
     event SettingsChanged(uint256 decay, uint256 minStakeRatio);
     event ProposalAdded(address indexed trigger, uint256 indexed id);
+    event ProposalCancelled(uint256 indexed id);
     event StakeAdded(
         address indexed entity,
         uint256 indexed id,
@@ -61,10 +62,14 @@ contract ConvictionOracle is Ownable {
         uint256 totalTokensStaked,
         uint256 lastRate
     );
-    event ProposalCancelled(uint256 indexed id);
 
     modifier onlyTrigger() {
         require(triggers[msg.sender], "SENDER_NOT_A_TRIGGER");
+        _;
+    }
+
+    modifier onlyTriggerProposals(uint256 _proposalId) {
+        require(triggerProposals[msg.sender][_proposalId], "PROPOSAL_NOT_CREATED_BY_TRIGGER");
         _;
     }
 
@@ -100,8 +105,8 @@ contract ConvictionOracle is Ownable {
     }
 
     function setSettings(uint256 _decay, uint256 _minStakeRatio) public onlyOwner {
-        decay = _decay.divu(1e18).add(1);
-        minStakeRatio = _minStakeRatio.divu(1e18).add(1);
+        decay = _decay;
+        minStakeRatio = _minStakeRatio;
 
         emit SettingsChanged(_decay, _minStakeRatio);
     }
@@ -110,6 +115,8 @@ contract ConvictionOracle is Ownable {
         Proposal storage p = proposals[proposalCounter];
         p.active = true;
         p.trigger = msg.sender;
+
+        triggerProposals[msg.sender][proposalCounter] = true;
 
         emit ProposalAdded(msg.sender, proposalCounter);
         proposalCounter++;
@@ -123,9 +130,12 @@ contract ConvictionOracle is Ownable {
         emit ProposalCancelled(_proposalId);
     }
 
-    // TODO: Only allow triggers to update the stakes?
-
-    function setStake(uint256 _proposalId, uint256 _newAmount) external activeProposal(_proposalId) {
+    function setStake(uint256 _proposalId, uint256 _newAmount)
+        external
+        onlyTrigger
+        activeProposal(_proposalId)
+        onlyTriggerProposals(_proposalId)
+    {
         uint256 currentAmount = getProposalVoterStake(_proposalId, msg.sender);
         if (_newAmount > currentAmount) {
             _stakeToProposal(_proposalId, _newAmount.sub(currentAmount), msg.sender);
@@ -134,22 +144,33 @@ contract ConvictionOracle is Ownable {
         }
     }
 
-    function stakeToProposal(uint256 _proposalId, uint256 _amount) external activeProposal(_proposalId) {
+    function stakeToProposal(uint256 _proposalId, uint256 _amount)
+        external
+        onlyTrigger
+        activeProposal(_proposalId)
+        onlyTriggerProposals(_proposalId)
+    {
         _stakeToProposal(_proposalId, _amount, msg.sender);
     }
 
-    function withdrawFromProposal(uint256 _proposalId, uint256 _amount) external proposalExists(_proposalId) {
+    function withdrawFromProposal(uint256 _proposalId, uint256 _amount)
+        external
+        onlyTrigger
+        proposalExists(_proposalId)
+        onlyTriggerProposals(_proposalId)
+    {
         _withdrawFromProposal(_proposalId, _amount, msg.sender);
     }
 
-    /**
-     * @dev Withdraw all staked tokens from proposals.
-     * @param _voter Account to withdraw from.
-     * @param _onlyCancelled If true withdraw only from cancelled proposals.
-     */
-    function withdrawStake(address _voter, bool _onlyCancelled) external {
-        _withdrawStake(_voter, _onlyCancelled);
-    }
+    // TODO: Consider if there is a way to be external?
+    // /**
+    //  * @dev Withdraw all staked tokens from proposals.
+    //  * @param _voter Account to withdraw from.
+    //  * @param _onlyCancelled If true withdraw only from cancelled proposals.
+    //  */
+    // function withdrawStake(address _voter, bool _onlyCancelled) external {
+    //     _withdrawStake(_voter, _onlyCancelled);
+    // }
 
     /**
      * @notice Get stake of voter `_voter` on proposal #`_proposalId`
@@ -170,9 +191,9 @@ contract ConvictionOracle is Ownable {
         return totalVoterStake[_voter];
     }
 
-    function getSettings() public view returns (uint256 _decay, uint256 _minStakeRatio) {
-        return (decay.mulu(1e18), minStakeRatio.mulu(1e18));
-    }
+    // function getSettings() public view returns (uint256 _decay, uint256 _minStakeRatio) {
+    //     return (decay.mulu(1e18), minStakeRatio.mulu(1e18));
+    // }
 
     /**
      * @dev Get proposal details
@@ -198,64 +219,83 @@ contract ConvictionOracle is Ownable {
         return (proposal.stakedTokens, proposal.lastRate, proposal.lastTime, proposal.active, proposal.trigger);
     }
 
-    function minStake() public view returns (uint256) {
-        return minStakeRatio.mulu(totalStaked);
-    }
-
-    // TODO: Better understand how the rate is calculated. Is allright to remove the maxRatio?
+    // function minStake() public view returns (uint256) {
+    //     return minStakeRatio.mulu(totalStaked);
+    // }
 
     /**
-     * @dev targetRate = (1 - sqrt(minStake / min(staked, minStake)))
+     * @dev Conviction formula: a^t * y(0) + x * (1 - a^t) / (1 - a)
+     * Solidity implementation: y = (2^128 * a^t * y0 + x * D * (2^128 - 2^128 * a^t) / (D - aD) + 2^127) / 2^128
+     * @param _timePassed Number of blocks since last conviction record
+     * @param _lastRate Last conviction record
+     * @param _oldAmount Amount of tokens staked until now
+     * @return Current conviction
      */
-    function calculateTargetRate(uint256 _stake) public view returns (uint256 _targetRate) {
-        if (_stake == 0) {
-            _targetRate = 0;
-        } else {
-            uint256 _minStake = minStake();
-            _targetRate = ONE.sub(_minStake.divu(_stake > _minStake ? _stake : _minStake).sqrt());
-        }
-    }
-
-    function targetRate(uint256 _proposalId) public view returns (uint256) {
-        Proposal storage proposal = proposals[_proposalId];
-        return calculateTargetRate(proposal.stakedTokens);
-    }
-
-    /**
-     * @notice Get current
-     * @dev rate = (alpha ^ time * lastRate + _targetRate * (1 - alpha ^ time)
-     */
-    function calculateRate(
+    function calculateConviction(
         uint256 _timePassed,
         uint256 _lastRate,
-        uint256 _targetRate
+        uint256 _oldAmount
     ) public view returns (uint256) {
-        int128 at = decay.pow(_timePassed);
-        return at.mulu(_lastRate).add(ONE.sub(at).mulu(_targetRate));
+        // atTWO_128 = 2^128 * a^t
+        uint256 atTWO_128 = _pow((decay << 128).div(D), _timePassed);
+        // solium-disable-previous-line
+        // conviction = (atTWO_128 * _lastRate + _oldAmount * D * (2^128 - atTWO_128) / (D - aD) + 2^127) / 2^128
+        return
+            (atTWO_128.mul(_lastRate).add(_oldAmount.mul(D).mul(TWO_128.sub(atTWO_128)).div(D - decay))).add(TWO_127) >>
+            128;
     }
 
-    function rate(uint256 _proposalId) public view returns (uint256 _rate) {
-        Proposal storage proposal = proposals[_proposalId];
-        assert(proposal.lastTime <= block.timestamp);
-        return
-            _rate = calculateRate(
-                block.timestamp - proposal.lastTime, // we assert it doesn't overflow above
-                proposal.lastRate,
-                targetRate(_proposalId)
-            );
+    /**
+     * Multiply _a by _b / 2^128.  Parameter _a should be less than or equal to
+     * 2^128 and parameter _b should be less than 2^128.
+     * @param _a left argument
+     * @param _b right argument
+     * @return _result _a * _b / 2^128
+     */
+    function _mul(uint256 _a, uint256 _b) internal pure returns (uint256 _result) {
+        require(_a <= TWO_128, "_a should be less than or equal to 2^128");
+        require(_b < TWO_128, "_b should be less than 2^128");
+        return _a.mul(_b).add(TWO_127) >> 128;
+    }
+
+    /**
+     * Calculate (_a / 2^128)^_b * 2^128.  Parameter _a should be less than 2^128.
+     *
+     * @param _a left argument
+     * @param _b right argument
+     * @return _result (_a / 2^128)^_b * 2^128
+     */
+    function _pow(uint256 _a, uint256 _b) internal pure returns (uint256 _result) {
+        require(_a < TWO_128, "_a should be less than 2^128");
+        uint256 a = _a;
+        uint256 b = _b;
+        _result = TWO_128;
+        while (b > 0) {
+            if (b & 1 == 0) {
+                a = _mul(a, a);
+                b >>= 1;
+            } else {
+                _result = _mul(_result, a);
+                b -= 1;
+            }
+        }
     }
 
     /**
      * @dev Calculate rate and store it on the proposal
      * @param _proposalId Proposal
      */
-    function _saveCheckpoint(uint256 _proposalId) internal {
+    function _saveCheckpoint(uint256 _proposalId, uint256 _oldStaked) internal {
         Proposal storage proposal = proposals[_proposalId];
         if (proposal.lastTime == block.timestamp) {
             return; // Rate already stored
         }
         // calculateRate and store it
-        proposal.lastRate = rate(_proposalId);
+        proposal.lastRate = calculateConviction(
+            block.timestamp - proposal.lastTime, // we assert it doesn't overflow above
+            proposal.lastRate,
+            _oldStaked
+        );
         proposal.lastTime = block.timestamp;
     }
 
@@ -308,7 +348,7 @@ contract ConvictionOracle is Ownable {
         require(_amount > 0, "AMOUNT_CAN_NOT_BE_ZERO");
 
         if (proposal.active) {
-            _saveCheckpoint(_proposalId);
+            _saveCheckpoint(_proposalId, proposal.stakedTokens);
         }
 
         _updateVoterStakedProposals(_proposalId, _from, _amount, false);
@@ -368,7 +408,7 @@ contract ConvictionOracle is Ownable {
         if (proposal.lastTime == 0) {
             proposal.lastTime = block.timestamp;
         } else {
-            _saveCheckpoint(_proposalId);
+            _saveCheckpoint(_proposalId, proposal.stakedTokens);
         }
 
         _updateVoterStakedProposals(_proposalId, _from, _amount, true);
@@ -381,5 +421,40 @@ contract ConvictionOracle is Ownable {
             proposal.stakedTokens,
             proposal.lastRate
         );
+    }
+
+    /**
+     * @dev Overrides TokenManagerHook's `_onRegisterAsHook`
+     */
+    function _onRegisterAsHook(
+        address _tokenManager,
+        uint256 _hookId,
+        address _token
+    ) internal override {
+        require(_token == address(stakeToken), "INCORRECT_TOKEN_MANAGER_HOOK");
+    }
+
+    /**
+     * @dev Overrides TokenManagerHook's `_onTransfer`
+     */
+    function _onTransfer(
+        address _from,
+        address _to,
+        uint256 _amount
+    ) internal override returns (bool) {
+        if (_from == address(0)) {
+            return true; // Do nothing on token mintings
+        }
+
+        uint256 newBalance = stakeToken.balanceOf(_from).sub(_amount);
+        if (newBalance < totalVoterStake[_from]) {
+            _withdrawStake(_from, true);
+        }
+
+        if (newBalance < totalVoterStake[_from]) {
+            _withdrawStake(_from, false);
+        }
+
+        return true;
     }
 }
