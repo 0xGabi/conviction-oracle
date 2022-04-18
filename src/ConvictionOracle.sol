@@ -129,36 +129,33 @@ contract ConvictionOracle is Ownable {
         emit ProposalCancelled(_proposalId);
     }
 
-    function setStake(uint256 _proposalId, uint256 _newAmount)
-        external
-        onlyTrigger
-        activeProposal(_proposalId)
-        onlyTriggerProposals(_proposalId)
-    {
-        uint256 currentAmount = getProposalVoterStake(_proposalId, msg.sender);
+    function setStake(
+        uint256 _proposalId,
+        uint256 _newAmount,
+        address _voter
+    ) external onlyTrigger activeProposal(_proposalId) onlyTriggerProposals(_proposalId) {
+        uint256 currentAmount = getProposalVoterStake(_proposalId, _voter);
         if (_newAmount > currentAmount) {
-            _stakeToProposal(_proposalId, _newAmount.sub(currentAmount), msg.sender);
+            _stakeToProposal(_proposalId, _newAmount.sub(currentAmount), _voter);
         } else if (_newAmount < currentAmount) {
-            _withdrawFromProposal(_proposalId, currentAmount.sub(_newAmount), msg.sender);
+            _withdrawFromProposal(_proposalId, currentAmount.sub(_newAmount), _voter);
         }
     }
 
-    function stakeToProposal(uint256 _proposalId, uint256 _amount)
-        external
-        onlyTrigger
-        activeProposal(_proposalId)
-        onlyTriggerProposals(_proposalId)
-    {
-        _stakeToProposal(_proposalId, _amount, msg.sender);
+    function stakeToProposal(
+        uint256 _proposalId,
+        uint256 _amount,
+        address _voter
+    ) external onlyTrigger activeProposal(_proposalId) onlyTriggerProposals(_proposalId) {
+        _stakeToProposal(_proposalId, _amount, _voter);
     }
 
-    function withdrawFromProposal(uint256 _proposalId, uint256 _amount)
-        external
-        onlyTrigger
-        proposalExists(_proposalId)
-        onlyTriggerProposals(_proposalId)
-    {
-        _withdrawFromProposal(_proposalId, _amount, msg.sender);
+    function withdrawFromProposal(
+        uint256 _proposalId,
+        uint256 _amount,
+        address _voter
+    ) external onlyTrigger proposalExists(_proposalId) onlyTriggerProposals(_proposalId) {
+        _withdrawFromProposal(_proposalId, _amount, _voter);
     }
 
     // TODO: Consider if there is a way to be external?
