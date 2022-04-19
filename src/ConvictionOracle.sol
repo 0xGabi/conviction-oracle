@@ -18,6 +18,8 @@ contract ConvictionOracle is Ownable {
     uint256 private constant TWO_128 = 0x100000000000000000000000000000000; // 2^128
     uint256 private constant TWO_127 = 0x80000000000000000000000000000000; // 2^127
 
+    string public constant ERROR_PROPOSAL_NOT_ACTIVE = "PROPOSAL_NOT_ACTIVE";
+
     uint64 public constant MAX_STAKED_PROPOSALS = 10;
 
     struct Proposal {
@@ -78,7 +80,7 @@ contract ConvictionOracle is Ownable {
     }
 
     modifier activeProposal(uint256 _proposalId) {
-        require(proposals[_proposalId].active, "PROPOSAL_NOT_ACTIVE");
+        require(proposals[_proposalId].active, ERROR_PROPOSAL_NOT_ACTIVE);
         _;
     }
 
