@@ -6,7 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {SafeMath} from "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import {TokenManagerHook} from "./utils/TokenManagerHook.sol";
+import {TokenManagerHook} from "./Utils/TokenManagerHook.sol";
 import "hardhat/console.sol";
 
 contract AragonConvictionOracle is Ownable, TokenManagerHook {
@@ -427,7 +427,7 @@ contract AragonConvictionOracle is Ownable, TokenManagerHook {
         address _tokenManager,
         uint256 _hookId,
         address _token
-    ) internal override {
+    ) internal override view {
         require(_token == address(stakeToken), "INCORRECT_TOKEN_MANAGER_HOOK");
     }
 
